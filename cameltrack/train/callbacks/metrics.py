@@ -29,28 +29,38 @@ class SimMetrics(pl.Callback):
         tracks = outputs["tracks"]
         dets = outputs["dets"]
         td_sim_matrix = outputs["td_sim_matrix"]
-        gt_ass_matrix = tracks.targets.unsqueeze(2) == dets.targets.unsqueeze(1)
-        gt_ass_matrix[~tracks.masks.unsqueeze(2).repeat(1, 1, gt_ass_matrix.shape[2])] = False
-        gt_ass_matrix[~dets.masks.unsqueeze(1).repeat(1, gt_ass_matrix.shape[1], 1)] = False
 
-        # roc
-        valid_idx = tracks.masks.unsqueeze(2) * dets.masks.unsqueeze(1)
-        valid_sim_matrix = outputs["td_sim_matrix"][valid_idx]
-        valid_gt_ass_matrix = gt_ass_matrix[valid_idx].to(torch.int32)
-        self.roc.update(valid_sim_matrix, valid_gt_ass_matrix)
-        self.auroc.update(valid_sim_matrix, valid_gt_ass_matrix)
+        # Valid pairs for metrics:
+        # - both entities must exist
+        # - both targets must be valid IDs (exclude -1 / ignored IDs)
+        valid_pairs = tracks.masks.unsqueeze(2) & dets.masks.unsqueeze(1)
+        valid_pairs = valid_pairs & (tracks.targets.unsqueeze(2) >= 0) & (dets.targets.unsqueeze(1) >= 0)
 
-        # acc
-        intersection = torch.eq(tracks.targets.unsqueeze(dim=2), dets.targets.unsqueeze(dim=1))
-        inter_tracks_masks = intersection.any(dim=2)
-        inter_dets_masks = intersection.any(dim=1)
-        binary_ass_matrix, _ = pl_module.association(td_sim_matrix, inter_tracks_masks, inter_dets_masks)
+        # GT association matrix on exactly the same valid support
+        gt_ass_matrix = (tracks.targets.unsqueeze(2) == dets.targets.unsqueeze(1)) & valid_pairs
 
-        # assert one to one match:
+        # ROC / AUROC
+        valid_sim_matrix = td_sim_matrix[valid_pairs]
+        valid_gt_ass_matrix = gt_ass_matrix[valid_pairs].to(torch.int32)
+
+        if valid_sim_matrix.numel() > 0:
+            self.roc.update(valid_sim_matrix, valid_gt_ass_matrix)
+            self.auroc.update(valid_sim_matrix, valid_gt_ass_matrix)
+
+        # Assignment accuracy:
+        # run Hungarian only on entities that actually have a valid GT association
+        inter_tracks_masks = gt_ass_matrix.any(dim=2)
+        inter_dets_masks = gt_ass_matrix.any(dim=1)
+
+        binary_ass_matrix, _ = pl_module.association(
+            td_sim_matrix, inter_tracks_masks, inter_dets_masks
+        )
+
+        # assert one-to-one match
         assert binary_ass_matrix.sum(dim=2).max() < 2
         assert binary_ass_matrix.sum(dim=1).max() < 2
 
-        # binary_ass_matrix and gt_ass_matrix computed before
+        # Compare predicted matched pair indices to GT matched pair indices
         idx = torch.arange(td_sim_matrix.numel(), device=td_sim_matrix.device).reshape(td_sim_matrix.shape)
         preds = idx[binary_ass_matrix]
         targets = idx[gt_ass_matrix]
@@ -79,7 +89,11 @@ class Accuracy(Metric):
         self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
 
     def update(self, preds: Tensor, target: Tensor) -> None:
-        self.correct += torch.sum(preds == target)
+        if target.numel() == 0:
+            return
+
+        # Count how many predicted matched pairs are actual GT matched pairs
+        self.correct += torch.isin(preds, target).sum()
         self.total += target.numel()
 
     def compute(self):

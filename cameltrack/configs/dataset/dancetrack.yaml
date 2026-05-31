@@ -1,0 +1,11 @@
+defaults:
+  - default
+
+# _target_: tracklab.wrappers.ExternalVideo
+_target_: tracklab.wrappers.mot_like.DanceTrack
+
+# video_path: "${project_dir}/media/example_dancetrack0058.mp4"
+# video_path: "https: Youtube video link"
+# video_path: "SportMOT/"
+video_path: "DanceTrack/"
+nframes: -1  # Number of frames to process; set to -1 or leave unset to process all frames

@@ -1,0 +1,207 @@
+_target_: cameltrack.CAMELTrack
+training_enabled: false
+
+checkpoint_path: null
+## Available checkpoints:
+## camel_bbox_app_global.ckpt
+## camel_bbox_app_kps_dancetrack.ckpt
+## camel_bbox_app_kps_sportsmot.ckpt
+## camel_bbox_app_kps_mot17.ckpt
+## camel_bbox_app_kps_posetrack21.ckpt
+## camel_bbox_bee24.ckpt
+## camel_bbox_app_dancetrack.ckpt
+
+override_camel_cfg:
+  ## Override the default CAMEL configuration when loading the checkpoint
+  sim_threshold: 0.1
+    # DanceTrack/SportsMOT 0.1; MOT17 0.475; PoseTrack 0.45; BEE24 0.6
+
+## Tracklet Management Parameters
+min_num_hits: 0 # Number of hits to consider a tracklet valid
+max_wo_hits: 150 # Maximum number of frames without hits to consider a tracklet invalid
+max_track_gallery_size: 50 # Gallery size for the Temporal Encoder
+# Minimum detection confidence to consider a detection
+min_det_conf: 0.1
+  # DanceTrack 0.4; SportsMOT 0.1; PoseTrack 0.3; MOT17 0.5
+# Minimum detection confidence to initialize a tracklet
+min_init_det_conf: 0.4
+  # DanceTrack 0.9; SportsMOT/PoseTrack 0.4; MOT17 0.55
+
+CAMEL:
+  _target_: cameltrack.camelv2.CAMELV2
+
+  ## Model Configuration
+  sim_threshold: 0.1 # Similarity threshold for detection/tracklet matching (0.0 to 1.0)
+  use_computed_sim_threshold: false
+
+#=====================
+# Preprocessing
+#=====================
+  preprocessing:
+    _target_: cameltrack.architecture.preprocessing.RAW
+
+    # _target_: cameltrack.architecture.preprocessing.CWT
+
+#=====================
+# Block A
+#=====================
+  blockA:
+    _target_: cameltrack.architecture.blockA.IIA
+
+    # _target_: cameltrack.architecture.blockA.MCA
+
+    # _target_: cameltrack.architecture.blockA.ECCA
+
+    # _target_: cameltrack.architecture.blockA.GAFFE
+
+#=====================
+# Block B
+#=====================
+  blockB:
+    # _target_: cameltrack.architecture.blockB.EuclideanSimilarity
+    
+    # _target_: cameltrack.architecture.blockB.CWP_MLP
+
+    # _target_: cameltrack.architecture.blockB.P_MLP
+
+    _target_: cameltrack.architecture.blockB.P_Transformer
+
+#=====================
+# TE
+#=====================
+  temporal_encoders:
+    app_encoder:
+      _target_: cameltrack.architecture.TemporalEncoder
+      hidden_dim: 512
+      n_heads: 8
+      n_layers: 4
+      dim_feedforward: 1024
+      checkpoint_path: null
+      det_tokenizer:
+        _target_: cameltrack.architecture.PartsEmbeddingsLinProj
+        use_parts: true
+
+    kp_encoder:
+      _target_: cameltrack.architecture.TemporalEncoder
+      hidden_dim: 128
+      n_heads: 8
+      n_layers: 4
+      dim_feedforward: 256
+      checkpoint_path: null
+      det_tokenizer:
+        _target_: cameltrack.architecture.KeypointsLinProj
+        use_conf: false
+
+    bbox_encoder:
+      _target_: cameltrack.architecture.TemporalEncoder
+      hidden_dim: 64
+      n_heads: 8
+      n_layers: 4
+      dim_feedforward: 128
+      checkpoint_path: null
+      det_tokenizer:
+        _target_: cameltrack.architecture.BBoxLinProj
+        use_conf: true
+
+  optimizer:
+    init_lr: 0.0001
+    weight_decay: 0.0001
+
+#=====================
+# Training
+#=====================
+train_cfg:
+  use_wandb: ${use_wandb}
+  use_rich: ${use_rich}
+  evaluate_only: false
+  model_selection_criteria: last
+  pl_trainer:
+    max_epochs: 20
+    precision: 32
+    gradient_clip_val: 0
+    accumulate_grad_batches: 1
+    enable_progress_bar: true
+    enable_model_summary: false
+    profiler: null
+    num_sanity_val_steps: 0
+    log_every_n_steps: 50
+    check_val_every_n_epochs: 1
+    val_check_interval: null
+    fast_dev_run: false # Set to true for quick testing, set to false for actual training
+
+datamodule_cfg:
+  _target_: cameltrack.train.CAMELDataModule
+  batch_transforms:
+    train:
+      _target_: cameltrack.train.transforms.Compose
+      transforms:
+      - _target_: cameltrack.train.transforms.AppEmbNoise
+        alpha: 0.4
+      - _target_: cameltrack.train.transforms.KeypointsShake
+        alpha: 0.05
+      - _target_: cameltrack.train.transforms.BBoxShake
+        alpha: 0.05
+  tracklet_transforms:
+    train:
+      _target_: cameltrack.train.transforms.Compose
+      transforms:
+      - _target_: cameltrack.train.transforms.MaxNumObs
+        max_num_obs: 150
+      - _target_: cameltrack.train.transforms.DropoutFeatures
+        p_drop_app: 0.4
+        p_drop_bbox: 0.1
+        p_drop_kps: 0.1
+# =========================================================================================
+# For new training
+      # - _target_: cameltrack.train.transforms.DropRecentWindowWithDetSwap
+      #   p_drop: 0.5
+# =========================================================================================
+      - _target_: cameltrack.train.transforms.ProbabilisticTransform
+        probs:
+        - 0.4
+        - 0.4
+        - 0.1
+        transforms:
+        - _target_: cameltrack.train.transforms.SwapSporadic
+          p_swap: 0.2
+          sigma: 50
+          method: gaussian
+        - _target_: cameltrack.train.transforms.DropoutSporadic
+          p_drop: 0.2
+          sigma: 50
+          method: gaussian
+        - _target_: cameltrack.train.transforms.SwapOccluded
+          p_swap: 0.5
+          min_iou: 0.5
+  sampler: simple
+  sampler_args:
+    fill_samples: true
+  multi_dataset_training: false
+  num_videos: null
+  num_workers: ${num_cores}
+  batch_size: 8
+# =========================================================================================
+# For new training
+  # max_length: 150
+  # num_samples: 40
+  # samples_per_video: 120
+  max_length: 50
+  num_samples: 32
+  samples_per_video: 100
+# =========================================================================================
+  train_add_val: false
+  dataset_splits:
+  - train
+  - val
+  name: camel
+  path: "${dataset.dataset_path}/states/train_camel"
+  tracker_states:
+    train: "${dataset.dataset_path}/states/train.pklz"
+    val: "${dataset.dataset_path}/states/val.pklz"
+  dataset_transforms:
+  - add_detections
+  - add_last_obs_counter
+  - add_occlusions
+  - add_dim_image
+
+_recursive_: false

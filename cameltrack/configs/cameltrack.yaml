@@ -28,7 +28,7 @@ pipeline:
 num_cores: 4  # Number of CPU cores to use for data loading and processing
 
 # Logging
-experiment_name: "CAMELTrack"
+experiment_name: "CAMELTrackv2"
 print_config: false
 use_wandb: false
 

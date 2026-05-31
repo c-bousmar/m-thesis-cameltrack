@@ -420,3 +420,122 @@ class SwapRandomDetectionsWithoutIdUpdate(Transform):
         #     assert not track_df.loc[track_df['age'].idxmin()]['da_swapped']
         df = pd.concat(track_dfs)
         return df, dets
+
+class DropRecentWindowWithDetSwap(Transform):
+    """
+    Simulate occlusions by removing a recent window in tracklets.
+
+    For each detection:
+      - with probability 1/3: keep detection as is
+      - with probability 1/3: replace detection by a sample from the older part
+      - with probability 1/3: replace detection by a sample from the removed window
+
+    Sampling inside the selected range is random with a Gaussian bias toward
+    the middle of the range.
+    """
+
+    def __init__(self, p_drop: float = 0.5):
+        super().__init__()
+        self.p_drop = p_drop
+        self.counter = 0
+
+    def _print_summary(self, df, title):
+        print(f"\n===== {title} =====")
+        summary = (
+            df.groupby("track_id")
+            .agg(
+                num_obs=("age", "size"),
+                age_min=("age", "min"),
+                age_max=("age", "max"),
+                img_min=("image_id", "min"),
+                img_max=("image_id", "max"),
+            )
+            .sort_values("track_id")
+        )
+        print(summary.head(20))
+        print(f"Total tracks: {len(summary)}")
+        print(f"Total rows: {len(df)}")
+
+    def _sample_gaussian_index(self, n: int) -> int:
+        """
+        Sample an index in [0, n-1] with a Gaussian centered at the middle.
+        Falls back safely for tiny ranges.
+        """
+        if n <= 1:
+            return 0
+
+        center = (n - 1) / 2.0
+        std = max(n / 6.0, 1e-6)  # ~99.7% inside range if unclipped
+
+        idx = int(round(self.rng.normal(loc=center, scale=std)))
+        idx = max(0, min(idx, n - 1))
+        return idx
+
+    def __call__(self, df, dets=None):
+        self.counter += 1
+
+        if df.empty or dets is None:
+            return df, dets
+
+        track_groups = {tid: tdf.copy() for tid, tdf in df.groupby("track_id")}
+
+        for idx, det in dets.iterrows():
+            track_id = det["track_id"]
+
+            # no corresponding tracklet
+            if track_id not in track_groups:
+                continue
+
+            # apply transform only with p_drop
+            if self.rng.random() > self.p_drop:
+                continue
+
+            track_df = track_groups[track_id].sort_values("age", ascending=False)
+
+            if len(track_df) == 0:
+                continue
+
+            # geometric(mean ~50), clamped to [1, 150], then to (track length - 1)
+            window_size = self.rng.geometric(p=1 / 50)
+            window_size = max(1, min(window_size, 150))
+            window_size = min(window_size, len(track_df) - 1)
+
+            removed_window = track_df.iloc[-window_size:]
+            older_df = track_df.iloc[:-window_size]
+
+            # avoid empty remaining track history after removal
+            if len(older_df) == 0:
+                older_df = track_df.iloc[:1]
+
+            # update stored tracklet
+            track_groups[track_id] = older_df
+
+            # choose equally among 3 cases
+            mode = self.rng.choice(["keep", "older", "window"])
+
+            if mode == "keep":
+                # detection stays as is
+                continue
+
+            elif mode == "older":
+                # sample inside [oldest frame detection, oldest window detection[
+                candidate_df = older_df
+
+            else:  # mode == "window"
+                # sample inside [oldest window detection, newest window detection]
+                candidate_df = removed_window
+
+            if len(candidate_df) == 0:
+                continue
+
+            sampled_row = candidate_df.iloc[self._sample_gaussian_index(len(candidate_df))].copy()
+
+            for col in dets.columns:
+                if col in sampled_row:
+                    dets.at[idx, col] = sampled_row[col]
+
+            # force current detection age
+            dets.at[idx, "age"] = 0.0
+
+        df = pd.concat(list(track_groups.values()), ignore_index=True)
+        return df, dets

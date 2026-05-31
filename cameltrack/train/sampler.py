@@ -16,7 +16,7 @@ log = logging.getLogger(__name__)
 
 class ConcatSampler(Sampler):
     def __init__(self, samplers, batch_size, num_samples):
-        super().__init__(None)
+        super().__init__()
         self.samplers = samplers
         self.batch_size = batch_size
         self.num_samples = num_samples
@@ -56,7 +56,7 @@ class ConcatSampler(Sampler):
 class CAMELSampler(Sampler):
     def __init__(self, dataset, batch_size=128, num_samples=8, samples_per_video=1,
                  fill_samples=False, **kwargs):
-        super().__init__(dataset)
+        super().__init__()
         self.rng = np.random.default_rng()
         self.dataset = dataset
         assert hasattr(dataset, "samples"), "You should define the samples"
