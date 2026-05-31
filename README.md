@@ -4,16 +4,15 @@ This repository contains the code accompanying a master’s thesis investigating
 
 ---
 
-# Thesis Summary
+# Abstract
 
-Multi-Object Tracking (MOT) systems based on tracking-by-detection have reached a point where detection performance is close to saturation, shifting the main source of errors to the **association stage**—the process of linking detections across frames into consistent trajectories.
+Multi-Object Tracking (MOT) is a core computer vision task with applications in domains such as autonomous driving and sports analytics. While detection performance is now close to saturation, association—linking detections across frames—remains the primary source of errors in online tracking-by-detection (TbD) systems.
 
-This work performs a systematic study of association failures and identifies two core limitations:
+This thesis studies the limitations of learned association, specifically on the CAMELTrack tracker, through a systematic failure-case analysis. We identified two key issues: (i) a tracklet embedding drift under missing observations, that degrades identity recovery after long occlusions, and (ii) a limited exploitation of heterogeneous cues, due to early fusion into a single representation.
 
-- **Drift in tracklet embeddings when observations are missing**, which degrades identity recovery after occlusion
-- **Inefficient use of heterogeneous cues**, caused by compressing them into a single representation before association
+To address these limitations, we propose two contributions. (i) A temporal augmentation, Detection-Window Dropout that simulates long-term missing observations but improves robustness only in targeted scenarios and shows limited generalization. (ii) A Context-Cue-Aware Association Architecture Paradigm that preserves cue-specific representations and performs pair-dependent scoring, enabling adaptive cue re-weighting for each tracklet-detection pair. A proposed architecture following that paradigm achieves state-of-the-art performances by improving HOTA by +2.79% and +4.82% on SportsMOT and DanceTrack, evaluated on custom train/val/test splits.
 
-To address these issues, the thesis explores both training and architectural directions with a focus on improving robustness and enabling more adaptive association decisions.
+Through this work, we demonstrate that substantial gains in online MOT can be achieved without improving detection, by focusing on robustness to missing observations, deeper representations, and pair-dependent association mechanisms
 
 ---
 
