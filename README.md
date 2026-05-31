@@ -1,6 +1,6 @@
 # CAMELTrack Thesis Repository
 
-> Master Thesis — *Leveraging Transformers for Context-Aware Multi-Feature Multi-Object Tracking*
+> Master Thesis — *Leveraging Transformers for Multi-Feature Context-Aware Multi-Object Tracking*
 
 This repository contains the code accompanying a master’s thesis investigating the limitations of learned association in online Multi-Object Tracking (MOT), using CAMELTrack as a baseline and extending it with new analysis tools and architectures.
 
