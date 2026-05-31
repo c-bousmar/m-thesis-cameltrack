@@ -79,7 +79,7 @@ Together, these tools enable a detailed understanding of how and why association
 
 ---
 
-# ⚙️ Quick Installation Guide from originl CAMELTrack repository
+# ⚙️ Quick Installation Guide (from original CAMELTrack repository)
 CAMELTrack is built on top of [TrackLab](https://github.com/TrackingLaboratory/tracklab), a research framework for Multi-Object Tracking.
 
 ![Installation demo](media/cameltrack-demo3.gif)
