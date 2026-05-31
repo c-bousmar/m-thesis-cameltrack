@@ -39,8 +39,6 @@ class Preprocessing(Module):
 class RAW(Preprocessing):
     """RAW cue preprocessing.
 
-    This is the direct stacking baseline.
-
     Input:
         tracks.tokens[name]: [B, N, D]
         dets.tokens[name]:   [B, M, D]
@@ -114,10 +112,6 @@ class CWT(Preprocessing):
     Extra diagnostic output:
         tracks.cue_cls: [B, K, D]
         dets.cue_cls:   [B, K, D]
-
-    Note:
-        tracks.cue_cls and dets.cue_cls are the same tensor, because the CLS
-        summarizes the joint track+detection set for each cue.
     """
 
     def __init__(
@@ -140,13 +134,10 @@ class CWT(Preprocessing):
         self.num_cues = len(self.cue_names)
         self.use_side_embeddings = use_side_embeddings
 
-        # One learnable CLS token per cue.
         self.cls_tokens = nn.Parameter(
             torch.zeros(1, self.num_cues, 1, cue_dim)
         )
 
-        # Optional side embeddings allow the transformer to distinguish
-        # track tokens from detection tokens.
         if self.use_side_embeddings:
             self.track_side = nn.Parameter(
                 torch.zeros(1, self.num_cues, 1, cue_dim)
@@ -158,8 +149,6 @@ class CWT(Preprocessing):
             self.track_side = None
             self.det_side = None
 
-        # Three parallel transformers if cue_names has length 3.
-        # More generally: one independent transformer per cue.
         self.encoders = nn.ModuleList([
             nn.TransformerEncoder(
                 nn.TransformerEncoderLayer(
@@ -286,7 +275,6 @@ class CWT(Preprocessing):
             cls_out = x[:, 0, :]       # [B, D]
             entity_out = x[:, 1:, :]   # [B, N + M, D]
 
-            # Remove invalid padded entity outputs.
             entity_out = entity_out * entity_mask.unsqueeze(-1)
 
             track_out = entity_out[:, :N, :]       # [B, N, D]

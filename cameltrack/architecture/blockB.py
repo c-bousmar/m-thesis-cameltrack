@@ -44,7 +44,7 @@ class BlockB(Module):
 
 # ======================================================================================================================
 # ======================================================================================================================
-# MODEL 1: Euclidean similarity over embeddings
+# ES
 # ======================================================================================================================
 # ======================================================================================================================
 class EuclideanSimilarity(BlockB):
@@ -84,7 +84,7 @@ class EuclideanSimilarity(BlockB):
 
 # ======================================================================================================================
 # ======================================================================================================================
-# MODEL 2: CWP-MLP over cues and side info
+# CWP-MLP
 # ======================================================================================================================
 # ======================================================================================================================
 class CWP_MLP(BlockB):
@@ -211,16 +211,10 @@ class CWP_MLP(BlockB):
 
 # ======================================================================================================================
 # ======================================================================================================================
-# MODEL 3: P-MLP over entities and side info
+# EP-MLP
 # ======================================================================================================================
 # ======================================================================================================================
 class P_MLP(BlockB):
-    """Paired-MLP scorer over BlockA embeddings.
-
-    Per-pair default input:
-        [track_emb, det_emb, optional absdiff, optional product]
-    """
-
     def __init__(
         self,
         cue_dim: int = 1024,
@@ -300,12 +294,10 @@ class P_MLP(BlockB):
 
 # ======================================================================================================================
 # ======================================================================================================================
-# MODEL 4: Transformer matching detection/trakclets
+# EP-T
 # ======================================================================================================================
 # ======================================================================================================================
 class _TransformerLayer(nn.Module):
-    """Private transformer encoder block for P-Transformer."""
-
     def __init__(self, dim: int, n_heads: int, dim_feedforward: int, dropout: float):
         super().__init__()
         self.attn = nn.MultiheadAttention(
@@ -335,11 +327,7 @@ class P_Transformer(BlockB):
 
     For each pair (track_i, det_j), it builds a tiny token sequence:
         [PAIR_CLS, track_emb, det_emb, optional absdiff, optional product]
-
-    A small transformer processes this sequence and the PAIR_CLS output is mapped
-    to a scalar logit.
     """
-
     def __init__(
         self,
         cue_dim: int = 1024,
@@ -445,20 +433,10 @@ class P_Transformer(BlockB):
 
 # ======================================================================================================================
 # ======================================================================================================================
-# MODEL 5: CP-MLP over cue_ctx only
+# CP-MLP
 # ======================================================================================================================
 # ======================================================================================================================
 class CP_MLP(BlockB):
-    """Cue-Paired MLP scorer.
-
-    Uses only:
-        tracks.cue_ctx: [B, N, K, D]
-        dets.cue_ctx:   [B, M, K, D]
-
-    Default K=3. The K cue tokens are flattened per entity and paired exactly like
-    P_MLP pairs tracks.embs and dets.embs.
-    """
-
     def __init__(
         self,
         cue_dim: int = 1024,
@@ -554,21 +532,10 @@ class CP_MLP(BlockB):
 
 # ======================================================================================================================
 # ======================================================================================================================
-# MODEL 6: CP-Transformer over cue_ctx only
+# CP-T
 # ======================================================================================================================
 # ======================================================================================================================
 class CP_Transformer(BlockB):
-    """Cue-Paired Transformer scorer.
-
-    Uses only:
-        tracks.cue_ctx: [B, N, K, D]
-        dets.cue_ctx:   [B, M, K, D]
-
-    Default K=3. For each pair, token sequence is:
-        [PAIR_CLS, track cues, detection cues, optional absdiff cues, optional product cues]
-    This mirrors P_Transformer, but replaces entity embeddings with cue tokens.
-    """
-
     def __init__(
         self,
         cue_dim: int = 1024,
@@ -669,7 +636,7 @@ class CP_Transformer(BlockB):
 
 # ======================================================================================================================
 # ======================================================================================================================
-# MODEL CA-ES: Cue-Aware Euclidean Similarity
+# CA-ES
 # ======================================================================================================================
 # ======================================================================================================================
 class CueAwareEuclideanSimilarity(BlockB):
@@ -678,10 +645,6 @@ class CueAwareEuclideanSimilarity(BlockB):
 
     Computes:
         sim(i, j) = sum_k sim(cue_k^track_i, cue_k^det_j)
-
-    - Uses only cue_ctx
-    - No learned parameters
-    - Compatible with CWT and MCA
     """
 
     def __init__(
@@ -696,7 +659,6 @@ class CueAwareEuclideanSimilarity(BlockB):
         self.similarity_metric = similarity_metrics[sim_strat]
 
     def forward(self, tracks, dets):
-        # --- sanity checks ---
         if not hasattr(tracks, "cue_ctx") or not hasattr(dets, "cue_ctx"):
             raise RuntimeError(
                 "CueAwareEuclideanSimilarity requires tracks.cue_ctx and dets.cue_ctx"
@@ -708,7 +670,6 @@ class CueAwareEuclideanSimilarity(BlockB):
         B, N, K, D = track_cues.shape
         M = det_cues.shape[1]
 
-        # --- compute cue-wise similarities ---
         sim_per_cue = []
         for k in range(K):
             sim_k = self.similarity_metric(
@@ -717,7 +678,6 @@ class CueAwareEuclideanSimilarity(BlockB):
             )  # [B, N, M]
             sim_per_cue.append(sim_k)
 
-        # --- aggregate over cues ---
         sim_matrix = torch.stack(sim_per_cue, dim=0).sum(dim=0)
 
         return sim_matrix
@@ -725,7 +685,7 @@ class CueAwareEuclideanSimilarity(BlockB):
 
 # ======================================================================================================================
 # ======================================================================================================================
-# MODEL 7: DAGCA (Dual Adaptive Gated Cue Attention)
+# EPACGA
 # ======================================================================================================================
 # ======================================================================================================================
 def _masked_norm_euclidean(track_embs, track_masks, det_embs, det_masks):
@@ -745,16 +705,6 @@ def _masked_norm_euclidean(track_embs, track_masks, det_embs, det_masks):
 
 
 class DAGCA(nn.Module):
-    """
-    DAGCA using cue_ctx from RAW preprocessing.
-
-    EXPECTED:
-        tracks.cue_ctx: [B, T, K, 1024]
-        dets.cue_ctx:   [B, D, K, 1024]
-        tracks.masks:   [B, T]
-        dets.masks:     [B, D]
-    """
-
     def __init__(
         self,
         emb_dim=1024,

@@ -26,7 +26,7 @@ class BlockA(Module):
 
 # ======================================================================================================================
 # ======================================================================================================================
-# MODEL 0: Mock BlockA, passthrough from preprocessing to blockB
+# Mock BlockA, passthrough from preprocessing to blockB
 # ======================================================================================================================
 # ======================================================================================================================
 class Mock(nn.Module):
@@ -50,7 +50,7 @@ class Mock(nn.Module):
         
 # ======================================================================================================================
 # ======================================================================================================================
-# MODEL 1: Original GAFFE
+# Original GAFFE
 # ======================================================================================================================
 # ======================================================================================================================
 class GAFFE(_GAFFE):
@@ -99,7 +99,7 @@ class GAFFE(_GAFFE):
 
 # ======================================================================================================================
 # ======================================================================================================================
-# MODEL 2: IIA (intra-entity and inter-entity self-attention)
+# IIEA
 # ======================================================================================================================
 # ======================================================================================================================
 class _SelfAttnBlock(nn.Module):
@@ -170,14 +170,11 @@ class IIA(BlockA):
         self.num_cues = len(self.cue_names)
         self.shuffle_entities_during_train = shuffle_entities_during_train
 
-        # Local entity tokens
         self.track_cls = nn.Parameter(torch.zeros(1, 1, 1, cue_dim))
         self.det_cls = nn.Parameter(torch.zeros(1, 1, 1, cue_dim))
 
-        # Local cue slot embeddings: slot 0 = entity CLS, then cue slots.
         self.local_token_type = nn.Parameter(torch.zeros(1, 1, 1 + self.num_cues, cue_dim))
 
-        # Track/detection side embeddings.
         self.local_track_side = nn.Parameter(torch.zeros(1, 1, 1, cue_dim))
         self.local_det_side = nn.Parameter(torch.zeros(1, 1, 1, cue_dim))
         self.global_track_side = nn.Parameter(torch.zeros(1, 1, cue_dim))
@@ -192,7 +189,6 @@ class IIA(BlockA):
             for _ in range(global_layers)
         ])
 
-        # Output projections for the standard BlockA contract.
         self.track_out = nn.Sequential(nn.LayerNorm(cue_dim), nn.Linear(cue_dim, cue_dim))
         self.det_out = nn.Sequential(nn.LayerNorm(cue_dim), nn.Linear(cue_dim, cue_dim))
 
@@ -216,7 +212,6 @@ class IIA(BlockA):
         x = torch.cat([cls, cues], dim=2)  # [B, E, 1+K, D]
         x = x + self.local_token_type[:, :, : 1 + K, :] + side_embed
 
-        # CLS is always valid; cue tokens are valid only if the entity exists.
         token_mask = torch.cat(
             [
                 torch.ones(B, E, 1, dtype=torch.bool, device=device),
@@ -302,8 +297,6 @@ class IIA(BlockA):
             track_cls_local, det_cls_local, track_mask, det_mask
         )
 
-        # tracks.embs = self.track_out(track_cls_ctx)
-        # dets.embs = self.det_out(det_cls_ctx)
         tracks.embs = track_cls_ctx
         dets.embs = det_cls_ctx
 
@@ -325,95 +318,10 @@ class IIA(BlockA):
         }
         return tracks, dets
 
-# ======================================================================================================================
-# ======================================================================================================================
-# MODEL 3: Simple MLP over concatenated cues and side info (for ablation studies)
-# ======================================================================================================================
-# ======================================================================================================================
-class MLPBlockA(BlockA):
-    """Simple MLP BlockA over all cue tokens plus track/detection side info.
-
-    Input per entity:
-        concat([cue_1, cue_2, ..., cue_K, side_embedding])
-
-    The side embedding tells the MLP whether the entity is a tracklet or a detection.
-    This is intentionally simple and useful as an ablation against transformer-based
-    BlockA variants.
-    """
-
-    def __init__(
-        self,
-        cue_dim: int = 1024,
-        cue_names: Sequence[str] = ("app_encoder", "kp_encoder", "bbox_encoder"),
-        hidden_dim: int = 2048,
-        n_layers: int = 2,
-        dropout: float = 0.1,
-        normalize: bool = False,
-        checkpoint_path: Optional[str] = None,
-        *args,
-        **kwargs,
-    ):
-        super().__init__()
-        self.cue_dim = cue_dim
-        self.cue_names = tuple(cue_names)
-        self.num_cues = len(self.cue_names)
-        self.normalize = normalize
-
-        self.track_side = nn.Parameter(torch.zeros(1, 1, cue_dim))
-        self.det_side = nn.Parameter(torch.zeros(1, 1, cue_dim))
-
-        in_dim = (self.num_cues + 1) * cue_dim
-        layers = []
-        cur_dim = in_dim
-        for _ in range(max(n_layers - 1, 0)):
-            layers.extend([
-                nn.LayerNorm(cur_dim),
-                nn.Linear(cur_dim, hidden_dim),
-                nn.GELU(),
-                nn.Dropout(dropout),
-            ])
-            cur_dim = hidden_dim
-        layers.extend([
-            nn.LayerNorm(cur_dim),
-            nn.Linear(cur_dim, cue_dim),
-        ])
-        self.mlp = nn.Sequential(*layers)
-
-        self.init_weights(checkpoint_path=checkpoint_path, module_name="cue_mlp_blockA")
-
-    def _stack_cues(self, token_dict):
-        missing = [name for name in self.cue_names if name not in token_dict]
-        if missing:
-            raise KeyError(f"Missing cues in token dict: {missing}. Found: {list(token_dict.keys())}")
-        return torch.stack([token_dict[name] for name in self.cue_names], dim=2)  # [B, E, K, D]
-
-    def _encode(self, cues, side_embedding):
-        B, E, K, D = cues.shape
-        side = side_embedding.expand(B, E, D)
-        x = torch.cat([cues.reshape(B, E, K * D), side], dim=-1)
-        embs = self.mlp(x)
-        if self.normalize:
-            embs = torch.nn.functional.normalize(embs, dim=-1)
-        return embs
-
-    def forward(self, tracks, dets):
-        track_cues = self._stack_cues(tracks.tokens)
-        det_cues = self._stack_cues(dets.tokens)
-
-        tracks.embs = self._encode(track_cues, self.track_side)
-        dets.embs = self._encode(det_cues, self.det_side)
-
-        # These are optional convenience outputs for richer BlockB variants.
-        tracks.mlp_cues_raw = track_cues
-        dets.mlp_cues_raw = det_cues
-        tracks.mlp_cue_names = self.cue_names
-        dets.mlp_cue_names = self.cue_names
-        return tracks, dets
-
 
 # ======================================================================================================================
 # ======================================================================================================================
-# MODEL 4: MCA
+# MCA
 # ======================================================================================================================
 # ======================================================================================================================
 class MCA(BlockA):
@@ -438,7 +346,7 @@ class MCA(BlockA):
     ):
         super().__init__()
         self.emb_dim = emb_dim
-        self.cue_dim = emb_dim  # lets camelv2 infer temporal encoder output_dim
+        self.cue_dim = emb_dim
         self.cue_names = tuple(cue_names)
         self.num_cues = len(self.cue_names)
         self.normalize_output = normalize_output
@@ -484,18 +392,14 @@ class MCA(BlockA):
         B, N, D = track_modal_tokens[0].shape
         M = det_modal_tokens[0].shape[1]
 
-        # Entity CLS initialization by cue concatenation + projection.
         cls_t = self.fusion_proj(torch.cat(track_modal_tokens, dim=-1))  # [B, N, D]
         cls_d = self.fusion_proj(torch.cat(det_modal_tokens, dim=-1))    # [B, M, D]
         cls_entities = torch.cat([cls_t, cls_d], dim=1)                  # [B, N+M, D]
 
-        # Sequence = entity CLS tokens + all cue/modal tokens.
-        # Order: [track CLS, det CLS, track cue1, track cue2, ..., det cue1, det cue2, ...]
         modal_tokens = torch.cat(track_modal_tokens + det_modal_tokens, dim=1)
         src = torch.cat([cls_entities, modal_tokens], dim=1)
         src = self.drop(self.norm(src))
 
-        # Mask follows the same token order as src.
         cls_mask = torch.cat([tracks.masks, dets.masks], dim=1)  # [B, N+M]
         track_modal_mask = torch.cat([tracks.masks for _ in self.cue_names], dim=1)  # [B, K*N]
         det_modal_mask = torch.cat([dets.masks for _ in self.cue_names], dim=1)      # [B, K*M]
@@ -518,7 +422,7 @@ class MCA(BlockA):
 
 # ======================================================================================================================
 # ======================================================================================================================
-# MODEL 5: ECCA (Entity-Cue Cross-Attention)
+# ECCA
 # ======================================================================================================================
 # ======================================================================================================================
 class _ECCA_Block(nn.Module):
