@@ -3,6 +3,25 @@ import matplotlib.pyplot as plt
 import os
 import configparser
 
+"""
+============================================================
+CUE IMPORTANCE TEMPORAL VISUALIZATION SCRIPT
+============================================================
+This script visualizes the temporal evolution of cue-level
+importance weights (Appearance, Keypoints, Bounding Box)
+for a given tracked identity in a MOT sequence.
+
+It relies on two synchronized log files:
+- cross_attention_weights.txt: stores per-frame cue weights
+- tracks_dets_ids.txt: maps detections to track IDs
+
+Only track-level entries corresponding to a target identity
+are extracted and normalized into probability distributions.
+
+The final output is a publication-ready plot showing how
+modality importance evolves over time for a single track.
+============================================================
+"""
 
 # ============================================================
 # CONFIGURATION

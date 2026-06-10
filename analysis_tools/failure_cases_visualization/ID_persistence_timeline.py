@@ -6,6 +6,34 @@ from matplotlib.patches import Rectangle
 from collections import defaultdict
 from pathlib import Path
 
+"""
+============================================================
+IDENTITY PERSISTENCE TIMELINE VISUALIZATION
+============================================================
+
+This script visualizes the temporal evolution of tracking
+associations between ground-truth identities and predicted IDs
+in a multi-object tracking (MOT) system.
+
+Each horizontal row corresponds to a ground-truth identity.
+The timeline shows how predicted IDs are assigned over time,
+allowing direct inspection of association errors.
+
+Represented events:
+- Correct association segments (colored bars with predicted IDs)
+- Identity switches (changes in predicted ID along time)
+- False negatives (thin black segments where no prediction exists)
+- Missing or unannotated frames (empty intervals)
+
+This visualization is designed for qualitative error analysis,
+in particular to detect:
+- ID switches (IDSW)
+- track fragmentation
+- missed detections (FN)
+
+It provides a compact temporal view of tracking stability.
+============================================================
+"""
 
 # ============================================================
 # CONFIGURATION

@@ -3,6 +3,43 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.ndimage import gaussian_filter1d
 
+"""
+============================================================
+RELATIVE OBJECT-LEVEL ATTENTION VISUALIZATION SCRIPT
+============================================================
+This script visualizes the evolution of object-level attention
+in a multi-object tracking (MOT) context.
+
+It focuses on how a target identity distributes its attention
+towards other interacting entities over time.
+
+For each timestamp, the script extracts self-attention weights
+from logged model outputs and tracks how much importance is
+assigned to different surrounding identities.
+
+The visualization shows:
+- Temporal evolution of attention from a target ID
+- Relative contribution of interacting IDs
+- Optional temporal smoothing and windowing
+- Optional frame-level event markers
+
+Input files:
+- self_attention_weights.txt: attention matrices per frame
+- tracks_dets_ids.txt: mapping between detections and IDs
+- tracks_dets_embs.txt: frame-wise embeddings (alignment)
+
+Output:
+A line plot showing how the target identity
+adjusts its attention distribution over time depending on
+interactions with other objects.
+
+This helps interpret:
+- identity ambiguity in crowded scenes
+- interaction-driven attention shifts
+- robustness of tracking associations
+============================================================
+"""
+
 # ============================================================
 # CONFIGURATION
 # ============================================================
