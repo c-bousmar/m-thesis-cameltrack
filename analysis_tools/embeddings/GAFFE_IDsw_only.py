@@ -8,6 +8,39 @@ import configparser
 import os
 import csv
 
+
+# ============================================================
+# ID SWITCH-FOCUSED EMBEDDING VISUALIZATION
+# ============================================================
+
+"""
+This script visualizes embedding trajectories in a multi-object
+tracking (MOT) system, but only for identities involved in ID switches.
+
+Unlike full embedding visualizations, this version isolates
+the problematic identities to better understand failure modes.
+
+The goal is to answer:
+- Do ID switch tracks form ambiguous clusters?
+- Are these embeddings overlapping with other identities?
+- Can representation space explain tracking failures?
+
+Only embeddings belonging to identities that experienced
+at least one ID switch (ID_S) are displayed.
+
+Input files:
+- tracks_dets_embs.txt: embedding vectors
+- tracks_dets_ids.txt: identity labels
+- failure_cases/<video>.csv: ID switch annotations
+
+Output:
+- GIF showing embedding space evolution
+- restricted to ID-switching identities only
+
+============================================================
+"""
+
+
 # ============================================================
 # PARAMETERS
 # ============================================================
@@ -30,9 +63,18 @@ SHOW = "both"  # "tracklets", "detections", "both"
 
 output_gif = info_folder + f"/{method_name}_{video_name}_GAFFE_{frame_start}_{frame_end}_IDsw_only.gif"
 
+
 # ============================================================
-# IDENTIFY SEQUENCE FRAME RANGES
+# RECONSTRUCT SEQUENCE FRAME INDEXING
 # ============================================================
+
+"""
+The dataset is composed of multiple sequential video folders.
+Each sequence defines a local frame range stored in seqinfo.ini.
+
+This step reconstructs global frame indexing so that embeddings
+can be correctly aligned with temporal positions.
+"""
 
 frame_start_end_dict = {}
 start_frame = 1
@@ -59,9 +101,17 @@ for seq_name in seq_dirs:
 
 seq_frame_start, seq_frame_end = frame_start_end_dict[video_name]
 
+
 # ============================================================
-# LOAD ID SWITCH IDS FROM CSV (FILTERED BY TIME INTERVAL)
+# EXTRACT ID SWITCHING IDENTITIES
 # ============================================================
+
+"""
+From failure logs, extract all track IDs that experienced
+at least one ID switch (ID_S) within the selected interval.
+
+These identities define the subset of embeddings to visualize.
+"""
 
 id_switch_ids = set()
 
@@ -84,21 +134,26 @@ if os.path.exists(failure_file):
                 continue
 
             global_frame = int(float(frame_raw))
-            print(issue)
-            print(pred_raw)
-            print(global_frame)
 
-            # Check if frame belongs to this sequence
+            # Keep only events within the selected time window
             if frame_start <= global_frame <= frame_end:
-                print("IDsw at frame", global_frame)
-
                 id_switch_ids.add(int(float(pred_raw)))
 
 print("ID switch IDs in selected interval:", id_switch_ids)
 
+
 # ============================================================
-# LOAD ALL EMBEDDINGS (NO FILTER ON ID SWITCH HERE)
+# LOAD AND FILTER EMBEDDINGS
 # ============================================================
+
+"""
+Load embeddings and keep only those:
+- within the selected sequence
+- within the selected temporal window
+
+Unlike previous scripts, we do NOT filter by ID switch here.
+Filtering is applied later at visualization time.
+"""
 
 embeddings_list = []
 frame_ids = []
@@ -133,14 +188,23 @@ with open(embeddings_file, "r") as f_emb, open(ids_file, "r") as f_ids:
                 types.append(1 if obj_type == "T" else 0)
                 track_ids.append(int(line_id))
 
+
 embeddings_array = np.array(embeddings_list, dtype=np.float32)
 frame_ids = np.array(frame_ids)
 types = np.array(types)
 track_ids = np.array(track_ids)
 
+
 # ============================================================
-# TSNE / PCA ON ALL POINTS
+# DIMENSIONALITY REDUCTION
 # ============================================================
+
+"""
+Apply PCA or t-SNE to project embeddings into 2D space.
+
+- t-SNE: emphasizes local structure and cluster separation
+- PCA: preserves global variance structure
+"""
 
 if use_tsne:
     reducer = TSNE(
@@ -154,9 +218,14 @@ else:
 
 embeddings_2d = reducer.fit_transform(embeddings_array)
 
+
 # ============================================================
-# COLORS
+# COLOR MAPPING
 # ============================================================
+
+"""
+TrackLab colormap ensures consistent coloring per identity.
+"""
 
 BASE_COLORS = np.load(colors_file)
 cmap_size = len(BASE_COLORS)
@@ -168,18 +237,31 @@ for tid in track_ids:
     else:
         idx = (tid - 1) % cmap_size
         colors.append(BASE_COLORS[idx])
+
 colors = np.array(colors)
 
+
 # ============================================================
-# AXIS LIMITS
+# GLOBAL AXIS LIMITS
 # ============================================================
 
 x_min, x_max = embeddings_2d[:, 0].min(), embeddings_2d[:, 0].max()
 y_min, y_max = embeddings_2d[:, 1].min(), embeddings_2d[:, 1].max()
 
+
 # ============================================================
-# GENERATE GIF (DISPLAY ONLY ID SWITCH TRACKS)
+# GENERATE GIF (ID SWITCH ONLY VISUALIZATION)
 # ============================================================
+
+"""
+At each timestep, only embeddings belonging to identities
+that experienced at least one ID switch are displayed.
+
+This isolates failure-prone tracks to analyze:
+- cluster ambiguity
+- embedding overlap
+- temporal instability
+"""
 
 frames = []
 
@@ -188,7 +270,9 @@ for f in range(frame_start, frame_end + 1):
     fig, ax = plt.subplots(figsize=(8, 6))
 
     mask_frame = frame_ids <= f
-    mask_idsw  = np.isin(track_ids, list(id_switch_ids))
+
+    # Select only identities that have ID switches
+    mask_idsw = np.isin(track_ids, list(id_switch_ids))
 
     track_mask = mask_frame & mask_idsw & (types == 1)
     det_mask   = mask_frame & mask_idsw & (types == 0)
@@ -230,6 +314,11 @@ for f in range(frame_start, frame_end + 1):
 
     frames.append(Image.open(buf).copy())
     buf.close()
+
+
+# ============================================================
+# SAVE OUTPUT GIF
+# ============================================================
 
 frames[0].save(
     output_gif,

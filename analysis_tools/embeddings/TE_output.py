@@ -7,9 +7,26 @@ import io
 import configparser
 import os
 
+
+# ============================================================
+# TEMPORAL ENCODER SEPARATE EMBEDDING VISUALIZATION (PER-ENCODER)
+# ============================================================
+
+"""
+This script visualizes embeddings produced by EACH Temporal Encoder (TE)
+separately (appearance, keypoints, bbox, etc.), without any aggregation.
+
+IMPORTANT:
+- Unlike previous scripts, embeddings are NOT summed.
+- Each TE is processed independently.
+- The goal is to compare how different modalities structure the embedding space.
+- Visualization is performed using t-SNE or PCA over time.
+"""
+
 # ============================================================
 # PARAMETERS
 # ============================================================
+
 info_folder = "/globalsc/ucl/elen/athieltg/Master_Thesis_MOT/outputs/CAMELTrackMOT17/2026-02-17/16-44-52 mot17 split 50-25-25"
 dataset_folder = "/globalsc/ucl/elen/athieltg/Master_Thesis_MOT/data/MOT17/test_50_25_25"
 
@@ -26,9 +43,18 @@ colors_file = info_folder + "/tracklab_cmap.npy"
 
 method_name = "tsne" if use_tsne else "pca"
 
+
 # ============================================================
-# IDENTIFY STARTING AND ENDING FRAMES
+# SEQUENCE FRAME INDEX RECONSTRUCTION
 # ============================================================
+
+"""
+Reconstructs global frame indexing from dataset structure.
+
+Each sequence in MOT17 has its own local frame numbering.
+This step maps them into a unified timeline.
+"""
+
 frame_start_end_dict = {}
 start_frame = 1
 
@@ -55,9 +81,15 @@ print("Sequence frames:")
 for seq_name, seq_len in frame_start_end_dict.items():
     print(seq_name, seq_len)
 
+
 # ============================================================
-# LOAD IDS
+# LOAD TRACK IDS
 # ============================================================
+
+"""
+Loads track IDs used for consistent coloring across all embeddings.
+"""
+
 track_ids_full = []
 
 with open(ids_file, "r") as f:
@@ -68,19 +100,35 @@ with open(ids_file, "r") as f:
 
 track_ids_full = np.array(track_ids_full)
 
+
 # ============================================================
-# LOOP OVER TEMPORAL ENCODERS
+# PROCESS EACH TEMPORAL ENCODER INDEPENDENTLY
 # ============================================================
+
 for TE_NAME in TE_LIST:
 
     print(f"\n=== Processing {TE_NAME.upper()} encoder ===")
 
     tokens_file = f"{info_folder}/tracks_dets_tokens_{TE_NAME}.txt"
+
     output_gif  = info_folder + f"/{method_name}_{video_name}_tokens_{TE_NAME}_{SHOW}_{frame_start}_{frame_end}.gif"
 
+
     # ============================================================
-    # LOAD TOKENS + FILTER FRAME RANGE
+    # LOAD TOKENS (PER TE) + FILTER FRAME RANGE
     # ============================================================
+
+    """
+    Loads embeddings produced by a single Temporal Encoder.
+
+    Each line contains:
+    - frame index
+    - object type (T = tracklet, D = detection)
+    - embedding vector
+
+    Only tokens within the selected frame interval are kept.
+    """
+
     tokens_list = []
     frame_ids = []
     types = []
@@ -122,11 +170,18 @@ for TE_NAME in TE_LIST:
     if len(track_ids) != len(tokens_array):
         raise ValueError("IDs and tokens length mismatch after filtering.")
 
-    print("Tokens shape:", tokens_array.shape)
 
     # ============================================================
-    # DIMENSIONALITY REDUCTION
+    # DIMENSIONALITY REDUCTION (t-SNE / PCA)
     # ============================================================
+
+    """
+    Projects high-dimensional embeddings into 2D space.
+
+    - t-SNE: emphasizes local neighborhood structure
+    - PCA: preserves global variance structure
+    """
+
     if use_tsne:
         perplexity = min(30, len(tokens_array) - 1)
         reducer = TSNE(
@@ -140,9 +195,16 @@ for TE_NAME in TE_LIST:
 
     tokens_2d = reducer.fit_transform(tokens_array)
 
+
     # ============================================================
-    # EXACT COLORS FROM TRACKLAB
+    # COLOR ASSIGNMENT (TRACK ID CONSISTENCY)
     # ============================================================
+
+    """
+    Assigns a consistent color to each track ID using TrackLab colormap.
+    Unmatched detections are displayed in gray.
+    """
+
     BASE_COLORS = np.load(colors_file)
     cmap_size = len(BASE_COLORS)
 
@@ -157,15 +219,27 @@ for TE_NAME in TE_LIST:
 
     colors = np.array(colors)
 
+
     # ============================================================
-    # GLOBAL AXIS LIMITS
+    # GLOBAL VISUALIZATION LIMITS
     # ============================================================
+
     x_min, x_max = tokens_2d[:, 0].min(), tokens_2d[:, 0].max()
     y_min, y_max = tokens_2d[:, 1].min(), tokens_2d[:, 1].max()
 
+
     # ============================================================
-    # GENERATE GIF
+    # GIF GENERATION OVER TIME
     # ============================================================
+
+    """
+    Generates a temporal visualization of embedding evolution.
+
+    At each frame:
+    - Only tokens up to current time are displayed
+    - Tracklets and detections can be shown separately or jointly
+    """
+
     frames = []
 
     for f_id in range(frame_start, frame_end + 1):
@@ -208,6 +282,7 @@ for TE_NAME in TE_LIST:
 
         ax.set_xlabel("Dim 1")
         ax.set_ylabel("Dim 2")
+
         ax.legend()
 
         buf = io.BytesIO()
@@ -218,9 +293,11 @@ for TE_NAME in TE_LIST:
         frames.append(Image.open(buf).copy())
         buf.close()
 
+
     # ============================================================
     # SAVE GIF
     # ============================================================
+
     frames[0].save(
         output_gif,
         save_all=True,
