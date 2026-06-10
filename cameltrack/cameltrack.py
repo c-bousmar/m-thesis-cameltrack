@@ -161,6 +161,9 @@ class CAMELTrack(ImageLevelModule):
         assert len(set([m[0] for m in matched.tolist()] + unmatched_trks)) == len(self.tracklets)
         assert len(set([m[1] for m in matched.tolist()] + unmatched_dets)) == len(detections)
 
+        track_ids_for_txt = []
+        det_to_track_id_for_txt = {}
+
         # Update matched tracklets with assigned detections
         for m in matched:
             tracklet = self.tracklets[m[0]]
@@ -169,11 +172,16 @@ class CAMELTrack(ImageLevelModule):
             detection.similarity_with_tracklet = td_sim_matrix[m[0], m[1]]
             detection.similarities = td_sim_matrix[:len(self.tracklets), m[1]]
 
+        for trk in self.tracklets:
+            track_ids_for_txt.append(trk.id)
+
         # Create and initialise new tracklets for unmatched detections
         for i in unmatched_dets:
             # Check that confidence is high enough
             if detections[i].bbox_conf >= self.min_init_det_conf:
-                self.tracklets.append(Tracklet(detections[i], self.max_track_gallery_size))
+                new_trk = Tracklet(detections[i], self.max_track_gallery_size)
+                self.tracklets.append(new_trk)
+                det_to_track_id_for_txt[i] = new_trk.id
 
         # Handle tracklets outputs and cleaning
         actives = []
@@ -195,6 +203,15 @@ class CAMELTrack(ImageLevelModule):
                             "St": self.CAMEL.sim_threshold,
                     }
                 })
+
+        for i in range(len(detections)):
+            tid = det_to_track_id_for_txt.get(i, -1)  # -1 = no track assigned
+            track_ids_for_txt.append(tid)
+        
+        if self.frame_count != 0: 
+            with open("tracks_dets_ids.txt", "a") as f:
+                for tid in track_ids_for_txt:
+                    f.write(f"{tid}\n")
 
         self.tracklets = [trk for trk in self.tracklets if trk.state != "dead"]
         self.frame_count += 1

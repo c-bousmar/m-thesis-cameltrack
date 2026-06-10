@@ -6,11 +6,12 @@ from matplotlib.patches import Rectangle
 from collections import defaultdict
 from pathlib import Path
 
-"""
-============================================================
-IDENTITY PERSISTENCE TIMELINE VISUALIZATION
-============================================================
 
+# ============================================================
+# IDENTITY PERSISTENCE TIMELINE VISUALIZATION
+# ============================================================
+
+"""
 This script visualizes the temporal evolution of tracking
 associations between ground-truth identities and predicted IDs
 in a multi-object tracking (MOT) system.

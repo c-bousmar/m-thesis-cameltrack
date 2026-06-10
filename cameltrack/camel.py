@@ -137,6 +137,7 @@ class CAMEL(pl.LightningModule):
         self.optimizer = optimizer
         # InfoNCE loss
         self.sim_loss = losses.NTXentLoss(distance=distances.CosineSimilarity(), reducer=reducers.AvgNonZeroReducer())
+        self.counter = 0
 
 
     def training_step(self, batch, batch_idx):
@@ -212,10 +213,140 @@ class CAMEL(pl.LightningModule):
             3. Apply the GAFFE module to compute embeddings from the tokens.
             4. Compute the similarity matrix between the tracklet and detection embeddings.
         """
+        self.counter += 1
+        generate_txt = True
         tracks, dets = self.tokenize(tracks, dets)  # feats -> list(tokens)
+        if generate_txt:
+            encoder_files = {
+                "app_encoder":  "tracks_dets_tokens_app.txt",
+                "kp_encoder":   "tracks_dets_tokens_kp.txt",
+                "bbox_encoder": "tracks_dets_tokens_bbox.txt",
+            }
+
+            for enc_name, out_file in encoder_files.items():
+
+                track_tokens_enc = tracks.tokens[enc_name]  # [B, N, E]
+                det_tokens_enc   = dets.tokens[enc_name]    # [B, M, E]
+
+                # --- Tracklets TE tokens ---
+                with open(out_file, "a") as f:
+                    B, N, E = track_tokens_enc.shape
+                    for b in range(B):
+                        for n in range(N):
+                            emb = track_tokens_enc[b, n].detach().cpu().numpy()
+                            line = [str(self.counter), "T"] + [f"{x:.6f}" for x in emb]
+                            f.write(" ".join(line) + "\n")
+
+                # --- Detections TE tokens ---
+                with open(out_file, "a") as f:
+                    B, M, E = det_tokens_enc.shape
+                    for b in range(B):
+                        for m in range(M):
+                            emb = det_tokens_enc[b, m].detach().cpu().numpy()
+                            line = [str(self.counter), "D"] + [f"{x:.6f}" for x in emb]
+                            f.write(" ".join(line) + "\n")
+
         tracks, dets = self.merge(tracks, dets)  # list(tokens) -> tokens
+        if generate_txt:
+            track_tokens = tracks.tokens
+            det_tokens = dets.tokens
+
+            output_file = "tracks_dets_tokens.txt"
+
+            # --- Tracklet tokens ---
+            with open(output_file, "a") as f:
+                B, N, E = track_tokens.shape
+                for b in range(B):
+                    for n in range(N):
+                        emb = track_tokens[b, n].detach().cpu().numpy()
+                        line = [str(self.counter), "T"] + [f"{x:.6f}" for x in emb]
+                        f.write(" ".join(line) + "\n")
+
+            # --- Detection tokens ---
+            with open(output_file, "a") as f:
+                B, M, E = det_tokens.shape
+                for b in range(B):
+                    for m in range(M):
+                        emb = det_tokens[b, m].detach().cpu().numpy()
+                        line = [str(self.counter), "D"] + [f"{x:.6f}" for x in emb]
+                        f.write(" ".join(line) + "\n")
+        
         tracks, dets = self.gaffe(tracks, dets)  # tokens -> embs
+        attns = None
+        #tracks, dets, attns = self.gaffe(tracks, dets, return_attn=True) # For attention weights visualization (To be used with ECCA block)
+        if generate_txt:
+            track_embs = tracks.embs
+            det_embs = dets.embs
+
+            output_file = "tracks_dets_embs.txt"
+
+            # --- Tracklet embeddings ---
+            with open(output_file, "a") as f:
+                B, N, E = track_embs.shape
+                for b in range(B):
+                    for n in range(N):
+                        emb = track_embs[b, n].detach().cpu().numpy()
+                        line = [str(self.counter), "T"] + [f"{x:.6f}" for x in emb]
+                        f.write(" ".join(line) + "\n")
+
+            # --- Detection embeddings ---
+            with open(output_file, "a") as f:
+                B, M, E = det_embs.shape
+                for b in range(B):
+                    for m in range(M):
+                        emb = det_embs[b, m].detach().cpu().numpy()
+                        line = [str(self.counter), "D"] + [f"{x:.6f}" for x in emb]
+                        f.write(" ".join(line) + "\n")
+
+        if generate_txt and attns is not None:
+            cross_weights = attns["cross"] # [B, Total_Objs, Total_Mem]
+            self_weights = attns["self"]   # [B, Total_Objs, Total_Objs]
+            
+            B, Total_Objs, Total_Mem = cross_weights.shape
+            N = tracks.masks.shape[1]
+            M = dets.masks.shape[1]
+
+            # ============================================================
+            # CROSS-ATTENTION
+            # ============================================================
+            output_cross = "cross_attention_weights.txt"
+            with open(output_cross, "a") as f:
+                for b in range(B):
+                    for i in range(Total_Objs):
+                        obj_type = "T" if i < N else "D"
+                        obj_idx = i if i < N else i - N
+                        
+                        if i < N:
+                            idx_app, idx_kp, idx_bb = i, N + i, 2*N + i
+                        else:
+                            j = i - N
+                            offset_d = 3 * N
+                            idx_app, idx_kp, idx_bb = offset_d + j, offset_d + M + j, offset_d + 2*M + j
+
+                        w_app = cross_weights[b, i, idx_app].item()
+                        w_kp  = cross_weights[b, i, idx_kp].item()
+                        w_bb  = cross_weights[b, i, idx_bb].item()
+                        
+                        weights_str = " ".join([f"{w:.6f}" for w in [w_app, w_kp, w_bb]])
+                        f.write(f"{self.counter} {obj_type} {obj_idx} {weights_str}\n")
+
+            # ============================================================
+            # SELF-ATTENTION
+            # ============================================================
+            output_self = "self_attention_weights.txt"
+            with open(output_self, "a") as f:
+                for b in range(B):
+                    for i in range(Total_Objs):
+                        obj_type = "T" if i < N else "D"
+                        obj_idx = i if i < N else i - N
+                        
+                        line_weights = self_weights[b, i, :].tolist()
+                        
+                        weights_str = " ".join([f"{w:.6f}" for w in line_weights])
+                        f.write(f"{self.counter} {obj_type} {obj_idx} {weights_str}\n")
+
         td_sim_matrix = self.similarity(tracks, dets)  # embs -> sim_matrix
+
         return tracks, dets, td_sim_matrix
 
     def train_val_preprocess(self, batch):  # TODO merge with predict_preprocess, compute det/trask masks in getitem

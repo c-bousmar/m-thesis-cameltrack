@@ -445,25 +445,50 @@ class _ECCA_Block(nn.Module):
         self.norm3 = nn.LayerNorm(dim)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, queries, memory, mem_mask=None):
+    def forward(self, queries, memory, mem_mask=None, return_attn=False):
+
+        attn_self = None
+        attn_cross = None
+
+        # -------------------------
+        # Self-Attention
+        # -------------------------
         q2 = self.norm1(queries)
-        self_output, _ = self.self_attn(q2, q2, q2, need_weights=False)
-        queries = queries + self.dropout(self_output)
-        
-        q2 = self.norm2(queries)
-        attn_output, _ = self.cross_attn(
-            q2, memory, memory, 
-            key_padding_mask=~mem_mask if mem_mask is not None else None,
-            need_weights=False 
+
+        self_output, self_attn_weights = self.self_attn(
+            q2, q2, q2,
+            need_weights=return_attn
         )
+
+        queries = queries + self.dropout(self_output)
+
+        # -------------------------
+        # Cross-Attention
+        # -------------------------
+        q2 = self.norm2(queries)
+
+        attn_output, cross_attn_weights = self.cross_attn(
+            q2, memory, memory,
+            key_padding_mask=~mem_mask if mem_mask is not None else None,
+            need_weights=return_attn
+        )
+
         queries = queries + self.dropout(attn_output)
-        
+
+        # -------------------------
+        # MLP
+        # -------------------------
         queries = queries + self.dropout(self.mlp(self.norm3(queries)))
+
+        if return_attn:
+            return queries, self_attn_weights, cross_attn_weights
+
         return queries
 
 
 class ECCA(BlockA):
     """ECCA: Entity-Cue Cross-Attention mechanism for cross-modal association."""
+
     def __init__(
         self,
         cue_dim: int = 1024,
@@ -478,14 +503,15 @@ class ECCA(BlockA):
         super().__init__()
         self.cue_dim = cue_dim
         self.blocks = nn.ModuleList([
-            _ECCA_Block(cue_dim, n_heads, dim_feedforward, dropout) 
+            _ECCA_Block(cue_dim, n_heads, dim_feedforward, dropout)
             for _ in range(num_blocks)
         ])
         self.init_weights(checkpoint_path=checkpoint_path, module_name="ecca_blockA")
 
-    def forward(self, tracks, dets):
+    def forward(self, tracks, dets, return_attn=False):
+
         device = next(self.parameters()).device
-        
+
         B = next(iter(tracks.tokens.values())).shape[0]
         N = next(iter(tracks.tokens.values())).shape[1]
         M = next(iter(dets.tokens.values())).shape[1]
@@ -493,26 +519,52 @@ class ECCA(BlockA):
         if N == 0 or M == 0:
             tracks.embs = torch.zeros(B, N, self.cue_dim, device=device)
             dets.embs = torch.zeros(B, M, self.cue_dim, device=device)
-            return tracks, dets
+            return tracks, dets, None if return_attn else (tracks, dets)
 
         all_cues = []
         all_masks = []
+
         for entity_set in [tracks, dets]:
             for cue_name, cue_tensor in entity_set.tokens.items():
                 all_cues.append(cue_tensor)
                 all_masks.append(entity_set.masks)
-        
-        memory = torch.cat(all_cues, dim=1)    
-        mem_mask = torch.cat(all_masks, dim=1) 
+
+        memory = torch.cat(all_cues, dim=1)
+        mem_mask = torch.cat(all_masks, dim=1)
 
         track_init = torch.stack(list(tracks.tokens.values())).sum(dim=0)
         det_init = torch.stack(list(dets.tokens.values())).sum(dim=0)
-        queries = torch.cat([track_init, det_init], dim=1) 
+        queries = torch.cat([track_init, det_init], dim=1)
 
-        for block in self.blocks:
-            queries = block(queries, memory, mem_mask=mem_mask)
+        self_attn_final = None
+        cross_attn_final = None
+
+        for i, block in enumerate(self.blocks):
+            is_last = (i == len(self.blocks) - 1)
+
+            if return_attn and is_last:
+                queries, self_attn_final, cross_attn_final = block(
+                    queries,
+                    memory,
+                    mem_mask=mem_mask,
+                    return_attn=True
+                )
+            else:
+                queries = block(
+                    queries,
+                    memory,
+                    mem_mask=mem_mask,
+                    return_attn=False
+                )
 
         tracks.embs = queries[:, :N, :]
         dets.embs = queries[:, N:, :]
+
+        if return_attn:
+            attns = {
+                "self": self_attn_final,
+                "cross": cross_attn_final
+            }
+            return tracks, dets, attns
 
         return tracks, dets
