@@ -1,13 +1,10 @@
 import logging
 from pathlib import Path
-
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn.functional as F
-
 from scipy.optimize import linear_sum_assignment
-
 from cameltrack.cameltrack import CAMELTrack, Tracklet
 from tracklab.datastruct import TrackingDataset
 
@@ -15,20 +12,38 @@ log = logging.getLogger(__name__)
 
 INFTY_COST = 1e5
 
-
 def compute_iou_matrix(boxes1, boxes2):
-    boxes1_ltrb = np.concatenate([boxes1[:, :2], boxes1[:, :2] + boxes1[:, 2:4]], axis=1)
-    boxes2_ltrb = np.concatenate([boxes2[:, :2], boxes2[:, :2] + boxes2[:, 2:4]], axis=1)
-    boxes1_ltrb = np.expand_dims(boxes1_ltrb, axis=1)
-    boxes2_ltrb = np.expand_dims(boxes2_ltrb, axis=0)
-    left_top = np.maximum(boxes1_ltrb[..., :2], boxes2_ltrb[..., :2])
-    right_bottom = np.minimum(boxes1_ltrb[..., 2:], boxes2_ltrb[..., 2:])
-    intersection_dims = np.clip(right_bottom - left_top, a_min=0, a_max=None)
-    intersection_area = intersection_dims[..., 0] * intersection_dims[..., 1]
-    area_boxes1 = (boxes1[:, 2] * boxes1[:, 3]).reshape(-1, 1)
-    area_boxes2 = (boxes2[:, 2] * boxes2[:, 3]).reshape(1, -1)
-    union_area = area_boxes1 + area_boxes2 - intersection_area
-    return intersection_area / union_area
+    """
+    Compute the IoU matrix between two arrays of bounding boxes in the format "ltwh".
+
+    Args:
+        boxes1 (np.ndarray): Array of bounding boxes with shape [N, 4], each row is [left, top, width, height].
+        boxes2 (np.ndarray): Array of bounding boxes with shape [M, 4], each row is [left, top, width, height].
+
+    Returns:
+        iou_matrix (np.ndarray): IoU matrix of shape [N, M] where each element [i, j] is the IoU between boxes1[i] and boxes2[j].
+    """
+
+    boxes1_ltrb = np.concatenate([boxes1[:, :2], boxes1[:, :2] + boxes1[:, 2:4]], axis=1)  # [N, 4]
+    boxes2_ltrb = np.concatenate([boxes2[:, :2], boxes2[:, :2] + boxes2[:, 2:4]], axis=1)  # [M, 4]
+
+    boxes1_ltrb = np.expand_dims(boxes1_ltrb, axis=1)  # [N, 1, 4]
+    boxes2_ltrb = np.expand_dims(boxes2_ltrb, axis=0)  # [1, M, 4]
+
+    left_top = np.maximum(boxes1_ltrb[..., :2], boxes2_ltrb[..., :2])  # [N, M, 2]
+    right_bottom = np.minimum(boxes1_ltrb[..., 2:], boxes2_ltrb[..., 2:])  # [N, M, 2]
+
+    intersection_dims = np.clip(right_bottom - left_top, a_min=0, a_max=None)  # [N, M, 2]
+    intersection_area = intersection_dims[..., 0] * intersection_dims[..., 1]  # [N, M]
+
+    area_boxes1 = (boxes1[:, 2] * boxes1[:, 3]).reshape(-1, 1)  # [N, 1]
+    area_boxes2 = (boxes2[:, 2] * boxes2[:, 3]).reshape(1, -1)  # [1, M]
+
+    union_area = area_boxes1 + area_boxes2 - intersection_area  # [N, M]
+
+    iou_matrix = intersection_area / union_area  # [N, M]
+
+    return iou_matrix
 
 
 def norm_euclidean_sim_matrix(track_embs, track_masks, det_embs, det_masks):
@@ -53,7 +68,17 @@ def norm_euclidean_sim_matrix(track_embs, track_masks, det_embs, det_masks):
 
 
 class FEATURE_FUSION_ORACLE(CAMELTrack):
+    """
+    Oracle for evaluating the upper bound of multi-cue fusion in CAMELTrack.
 
+    This module assumes privileged access to ground-truth annotations in order to:
+    1. Evaluate the discriminative power of individual tracking cues.
+    2. Compute an oracle-optimal linear combination of cue-specific cost matrices.
+    3. Estimate the best achievable association accuracy given the current feature space.
+
+    The oracle does NOT reflect a real-world tracking system:
+    it performs grid search over fusion weights using ground-truth annotations.
+    """
     level = "image"
     input_columns = ["bbox_conf"]
     output_columns = ["track_id"]
@@ -95,12 +120,15 @@ class FEATURE_FUSION_ORACLE(CAMELTrack):
         self.tracking_dataset = tracking_dataset
         self.cue_names = list(self.CAMEL.temp_encs.keys())
 
-        print("\n" + "="*60)
-        print("FEATURE_FUSION_ORACLE INITIALIZED (EXP 11 - 3 CUES)")
-        print(f"Optimizing weights linearly for cues: {self.cue_names}")
-        print("="*60 + "\n")
-
     def _generate_3_cue_weights(self, steps=21):
+        """
+        Generate a simplex grid of valid convex combinations for 3 cues.
+
+        Each weight vector w = (w1, w2, w3) satisfies:
+            w1 + w2 + w3 = 1, w_i ≥ 0
+
+        Used for brute-force oracle optimization of cue fusion.
+        """
         weights = []
         for w1 in np.linspace(0.0, 1.0, steps):
             for w2 in np.linspace(0.0, 1.0 - w1, steps):
@@ -111,14 +139,22 @@ class FEATURE_FUSION_ORACLE(CAMELTrack):
 
     @torch.no_grad()
     def associate_dets_to_trks(self, tracklets, detections):
+        """
+        Oracle association between tracklets and detections.
+
+        The method:
+        1. Extracts cue embeddings for tracks and detections
+        2. Builds per-cue cost matrices
+        3. Aligns detections with ground-truth identities (oracle supervision)
+        4. Constructs oracle target assignment matrix
+        5. Searches for optimal linear fusion of cues
+        6. Runs final Hungarian matching using optimal costs
+        """
         image_id = detections[0].image_id
-        print(f"\n--- Processing Image ID: {image_id} | Active Tracklets: {len(tracklets)} | Detections: {len(detections)} ---")
 
         if not tracklets:
-            print("[INFO] No active tracklets. Skipping association.")
             return np.empty((0, 2)), [], list(range(len(detections))), np.empty((0,))
         if not detections:
-            print("[INFO] No detections on this frame. Skipping association.")
             return np.empty((0, 2)), list(range(len(tracklets))), [], np.empty((0,))
 
         batch = self.build_camel_batch(tracklets, detections)
@@ -126,11 +162,9 @@ class FEATURE_FUSION_ORACLE(CAMELTrack):
         tracks, dets = self.CAMEL.tokenize(tracks, dets)
 
         cue_cost_matrices = {}
-        print(f"[STEP 1] Extract cue tokens : {self.cue_names}")
         
         for cue in self.cue_names:
             if cue not in tracks.tokens or cue not in dets.tokens:
-                print(f"  -> [WARN] Cue '{cue}' missing.")
                 continue
 
             track_tokens = tracks.tokens[cue]  
@@ -163,8 +197,6 @@ class FEATURE_FUSION_ORACLE(CAMELTrack):
 
         if not cue_cost_matrices:
             raise RuntimeError("No cost matrices generated from cues.")
-
-        print("[STEP 2] Geometric alignment (IoU) of detections with the Ground Truth...")
         
         first_det = detections[0]
         if hasattr(first_det, "image_id"):
@@ -184,9 +216,6 @@ class FEATURE_FUSION_ORACLE(CAMELTrack):
         if len(detections_gt) == 0 and hasattr(first_det, "metadata"):
             image_id = first_det.metadata.id
             detections_gt = all_detections_gt[all_detections_gt.image_id == image_id]
-
-        print(f"--- [DEBUG ORACLE] Image ID extracted : {image_id} ---")
-        print(f"Charged lines from GT (detections_gt): {len(detections_gt)}")
 
         gt_matches = {}  
         if len(detections_gt) > 0:
@@ -226,14 +255,10 @@ class FEATURE_FUSION_ORACLE(CAMELTrack):
                 if trk_oracle_id == det_oracle_id and trk_oracle_id != -1:
                     target_gt_matrix[t_idx, d_idx] = True
 
-        print(f"Number of valid links found in target_gt_matrix : {np.sum(target_gt_matrix)}")
-
         cues_list = list(cue_cost_matrices.keys())
         best_accuracy = -1.0
         best_cost_matrix = None
         best_weights = None
-
-        print(f"[STEP 3] Starting Grid Search (Active Cues to Fuse : {cues_list})")
 
         if len(cues_list) == 1:
             best_cost_matrix = cue_cost_matrices[cues_list[0]]
@@ -265,9 +290,6 @@ class FEATURE_FUSION_ORACLE(CAMELTrack):
                     best_cost_matrix = current_cost_matrix
                     best_weights = w
 
-        weight_str = ", ".join([f"{cues_list[i]}: {best_weights[i]:.2f}" for i in range(len(cues_list))])
-        print(f"  -> [ORACLE SOLUTION] Optimal weights found : ({weight_str}) | Maximum Association Accuracy: {best_accuracy * 100:.2f}%")
-        print("[STEP 4] Final resolution of the assignment and filtering by confidence threshold...")
         row_ind, col_ind = linear_sum_assignment(best_cost_matrix)
 
         matched = []
@@ -281,14 +303,10 @@ class FEATURE_FUSION_ORACLE(CAMELTrack):
                 matched.append([r, c])
                 used_tracks.add(r)
                 used_dets.add(c)
-            else:
-                print(f"  -> [REJET] Match trk_{r} <-> det_{c} rejected : Similarity ({sim:.3f}) < threshold ({sim_threshold})")
 
         unmatched_trks = [i for i in range(num_tracks) if i not in used_tracks]
         unmatched_dets = [j for j in range(num_dets) if j not in used_dets]
         matched = np.array(matched) if len(matched) > 0 else np.empty((0, 2), dtype=int)
-
-        print(f"[RESULTAT] Done with {len(matched)} Associated, {len(unmatched_trks)} Lost (unmatched trks), {len(unmatched_dets)} New (unmatched dets).")
 
         for m in matched:
             tracklets[m[0]].oracle_track_id = detections[m[1]].oracle_track_id
