@@ -168,7 +168,7 @@ class CAMELV2(pl.LightningModule):
         # 2) Preprocess cue tokens into tracks.cue_ctx / dets.cue_ctx.
         tracks, dets = self.preprocessing(tracks, dets)
 
-        # 3) Block A: discriminative entity representation.
+        # 3) Block A: Discriminative entity representation.
         tracks, dets = self.blockA(tracks, dets)
         if not hasattr(tracks, "embs") or not hasattr(dets, "embs"):
             raise RuntimeError("blockA must set tracks.embs and dets.embs")
