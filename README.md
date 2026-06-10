@@ -52,10 +52,10 @@ In practice, this repository includes:
 To understand the limits of the system independently of model design, this repository includes two oracle implementations:
 
 ### Association Oracle
-Simulates perfect association using ground truth assignments to establish an **upper bound on achievable performance** given detections.
+Simulates perfect association using ground-truth assignments to establish an **upper bound on achievable performance** given fixed detections.
 
 ### Cue-Fusion Oracle
-Evaluates the best possible association performance achievable by combining cues with optimal weights, revealing whether limitations arise from:
+Evaluates the best possible association performance achievable by combining cues linear with optimal weights, revealing whether limitations arise from:
 - the cues themselves
 - or the association architecture
 
