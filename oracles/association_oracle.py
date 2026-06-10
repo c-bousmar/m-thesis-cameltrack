@@ -10,6 +10,21 @@ log = logging.getLogger(__name__)
 INFTY_COST = 1e+5
 
 class ASSOCIATION_ORACLE(ImageLevelModule):
+    """
+    Oracle tracker providing an upper bound on tracking performance.
+
+    This module bypasses the association problem by using privileged access
+    to ground-truth annotations. For each frame, detections are matched to
+    ground-truth bounding boxes using IoU-based Hungarian assignment.
+
+    Matched detections directly inherit the corresponding ground-truth
+    identity. Therefore, any remaining tracking errors are exclusively caused
+    by detection failures (false positives, false negatives, or inaccurate
+    localization).
+
+    This oracle is intended for evaluation and analysis only and not in
+    realistic tracking scenarios.
+    """
     input_columns = ["bbox_ltwh"]
     output_columns = [
         "track_id",
@@ -31,6 +46,14 @@ class ASSOCIATION_ORACLE(ImageLevelModule):
 
     @torch.no_grad()
     def process(self, batch, detections: pd.DataFrame, metadatas: pd.DataFrame):
+        """
+        Assign ground-truth identities to detections.
+
+        For the current frame, detections are matched against the corresponding
+        ground-truth bounding boxes using IoU-based Hungarian assignment.
+        Each valid detection receives the track_id of its matched ground-truth
+        target.
+        """
         if len(detections) == 0:
             return []
 
@@ -38,6 +61,8 @@ class ASSOCIATION_ORACLE(ImageLevelModule):
         video_id = metadatas.video_id.unique()[0]
 
         all_detections_gt = self.tracking_dataset.sets[self.cfg['eval_set']].detections_gt
+
+        # Retrieve ground-truth annotations corresponding to the current frame.
         detections_gt = all_detections_gt[all_detections_gt.image_id == image_id]
 
         assert detections_gt.video_id.unique()[0] == video_id
@@ -49,27 +74,51 @@ class ASSOCIATION_ORACLE(ImageLevelModule):
         if len(detections_gt) == 0:
             return []
 
-        col_ind, row_ind = self.ground_truth_to_prediction_match(detections, detections_gt)
+        # Compute the optimal one-to-one matching between detections and
+        # ground-truth objects.
+        col_ind, row_ind = self.ground_truth_to_prediction_match(
+            detections,
+            detections_gt
+        )
 
         matched_gt = detections_gt.iloc[row_ind]
         matched_detections = detections.iloc[col_ind]
-        matched_detections['track_id'] = matched_gt['track_id'].values
+
+        # Propagate ground-truth identities to matched detections.
+        matched_detections["track_id"] = matched_gt["track_id"].values
 
         return matched_detections
 
     def ground_truth_to_prediction_match(self, detections, detections_gt):
+        """
+        Match detections to ground-truth objects.
+
+        A cost matrix is built as:
+
+            cost = 1 - IoU
+
+        Associations with IoU < 0.5 are rejected by assigning a large cost.
+        The Hungarian algorithm is then used to compute the globally optimal
+        one-to-one assignment.
+        """
         bbox_ltwh_gt = np.vstack(detections_gt.bbox_ltwh.values)
         bbox_ltwh = np.vstack(detections.bbox_ltwh.values)
         assert len(bbox_ltwh_gt) > 0 and len(bbox_ltwh) > 0
 
+        # Convert spatial overlap into a minimization cost.
         cost_matrix = 1 - compute_iou_matrix(bbox_ltwh_gt, bbox_ltwh)
 
+        # Reject geometrically implausible matches.
         cost_matrix[cost_matrix > 0.5] = INFTY_COST
+
+        # Solve the assignment problem.
         row_ind, col_ind = linear_sum_assignment(cost_matrix)
 
+        # Keep only assignments satisfying the IoU threshold.
         valid_matches = cost_matrix[row_ind, col_ind] < 1.0
         row_ind = row_ind[valid_matches]
         col_ind = col_ind[valid_matches]
+        
         return col_ind, row_ind
 
 
